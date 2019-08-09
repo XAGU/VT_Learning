@@ -7,7 +7,7 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "VT_Learn", "VT_Learn\VT_Lea
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{6BD0311B-68B5-42C0-AB86-CBEAB8EBDB9A}"
 	ProjectSection(SolutionItems) = preProject
-		ReadMe.txt = ReadMe.txt
+		ReadMe.MD = ReadMe.MD
 	EndProjectSection
 EndProject
 Global
