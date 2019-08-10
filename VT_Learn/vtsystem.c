@@ -13,12 +13,83 @@ static ULONG VmxAdjustControls(ULONG Ctl, ULONG Msr)
 	return Ctl;
 }
 
-void SetupVMCS()
+void __declspec(naked) GuestEntry(void)
+{
+	__asm
+	{
+		mov ax, es
+		mov es, ax
+
+		mov ax, ds
+		mov ds, ax
+
+		mov ax, fs
+		mov fs, ax
+
+		mov ax, gs
+		mov gs, ax
+
+		mov ax, ss
+		mov ss, ax
+	}
+	Vmx_VmCall();
+}
+
+static void SetupVMCS()
 {
 	ULONG GdtBase, IdtBase;
 	GdtBase = Asm_GetGdtBase();
 	IdtBase = Asm_GetIdtBase();
 //1.Guest state fields
+	Vmx_VmWrite(GUEST_CR0, Asm_GetCr0());
+	Vmx_VmWrite(GUEST_CR3, Asm_GetCr3());
+	Vmx_VmWrite(GUEST_CR4, Asm_GetCr4());
+
+	Vmx_VmWrite(GUEST_DR7, 0x400);
+	Vmx_VmWrite(GUEST_RFLAGS, Asm_GetEflags() & ~0x200);
+
+	Vmx_VmWrite(GUEST_ES_SELECTOR, Asm_GetEs() & 0xFFF8);
+	Vmx_VmWrite(GUEST_CS_SELECTOR, Asm_GetCs() & 0xFFF8);
+	Vmx_VmWrite(GUEST_DS_SELECTOR, Asm_GetDs() & 0xFFF8);
+	Vmx_VmWrite(GUEST_FS_SELECTOR, Asm_GetFs() & 0xFFF8);
+	Vmx_VmWrite(GUEST_GS_SELECTOR, Asm_GetGs() & 0xFFF8);
+	Vmx_VmWrite(GUEST_SS_SELECTOR, Asm_GetSs() & 0xFFF8);
+	Vmx_VmWrite(GUEST_TR_SELECTOR, Asm_GetTr() & 0xFFF8);
+
+	Vmx_VmWrite(GUEST_ES_AR_BYTES, 0x10000);
+	Vmx_VmWrite(GUEST_FS_AR_BYTES, 0x10000);
+	Vmx_VmWrite(GUEST_DS_AR_BYTES, 0x10000);
+	Vmx_VmWrite(GUEST_SS_AR_BYTES, 0x10000);
+	Vmx_VmWrite(GUEST_GS_AR_BYTES, 0x10000);
+	Vmx_VmWrite(GUEST_LDTR_AR_BYTES, 0x10000);
+
+	Vmx_VmWrite(GUEST_CS_AR_BYTES, 0xc09b);
+	Vmx_VmWrite(GUEST_CS_BASE, 0);
+	Vmx_VmWrite(GUEST_CS_LIMIT, 0xffffffff);
+
+	Vmx_VmWrite(GUEST_TR_AR_BYTES, 0x008b);
+	Vmx_VmWrite(GUEST_TR_BASE, 0x801E3000);
+	Vmx_VmWrite(GUEST_TR_LIMIT, 0x20ab);
+
+
+	Vmx_VmWrite(GUEST_GDTR_BASE, GdtBase);
+	Vmx_VmWrite(GUEST_GDTR_LIMIT, Asm_GetGdtLimit());
+	Vmx_VmWrite(GUEST_IDTR_BASE, IdtBase);
+	Vmx_VmWrite(GUEST_IDTR_LIMIT, Asm_GetIdtLimit());
+
+	Vmx_VmWrite(GUEST_IA32_DEBUGCTL, Asm_ReadMsr(MSR_IA32_DEBUGCTL) & 0xFFFFFFFF);
+	Vmx_VmWrite(GUEST_IA32_DEBUGCTL_HIGH, Asm_ReadMsr(MSR_IA32_DEBUGCTL) >> 32);
+
+	Vmx_VmWrite(GUEST_SYSENTER_CS, Asm_ReadMsr(MSR_IA32_SYSENTER_CS) & 0xFFFFFFFF);
+	Vmx_VmWrite(GUEST_SYSENTER_ESP, Asm_ReadMsr(MSR_IA32_SYSENTER_ESP) & 0xFFFFFFFF);
+	Vmx_VmWrite(GUEST_SYSENTER_EIP, Asm_ReadMsr(MSR_IA32_SYSENTER_EIP) & 0xFFFFFFFF); // KiFastCallEntry
+
+	Vmx_VmWrite(GUEST_RSP, ((ULONG)g_VMXCPU.pStack) + 0x1000);     //Guest 临时栈
+	Vmx_VmWrite(GUEST_RIP, (ULONG)GuestEntry);                     // 客户机的入口点
+
+	Vmx_VmWrite(VMCS_LINK_POINTER, 0xffffffff);
+	Vmx_VmWrite(VMCS_LINK_POINTER_HIGH, 0xffffffff);
+
 //2.host state fields
 	Vmx_VmWrite(HOST_CR0, Asm_GetCr0());
 	Vmx_VmWrite(HOST_CR3, Asm_GetCr3());
@@ -42,7 +113,7 @@ void SetupVMCS()
 	Vmx_VmWrite(HOST_IA32_SYSENTER_ESP, Asm_ReadMsr(MSR_IA32_SYSENTER_ESP) & 0xFFFFFFFF);
 	Vmx_VmWrite(HOST_IA32_SYSENTER_EIP, Asm_ReadMsr(MSR_IA32_SYSENTER_EIP) & 0xFFFFFFFF); // KiFastCallEntry
 
-	Vmx_VmWrite(HOST_RSP, ((ULONG)g_VMXCPU.pStack) + 0x1000);     //Host 临时栈
+	Vmx_VmWrite(HOST_RSP, ((ULONG)g_VMXCPU.pStack) + 0x2000);     //Host 临时栈
 	Vmx_VmWrite(HOST_RIP, (ULONG)VMMEntryPoint);                  //这里定义我们的VMM处理程序入口
 //3.vm-control fields
 	//3.1. vm execution contro
@@ -95,19 +166,19 @@ NTSTATUS StartVirtualTechnology()
 	*(ULONG*)g_VMXCPU.pVMCSRegion = 1;
 	g_VMXCPU.pVMCSRegion_PA = MmGetPhysicalAddress(g_VMXCPU.pVMCSRegion);
 	//分配栈空间
-	g_VMXCPU.pStack = ExAllocatePoolWithTag(NonPagedPool, 0x1000, 'stck');
-	RtlZeroMemory(g_VMXCPU.pStack, 0x1000);
+	g_VMXCPU.pStack = ExAllocatePoolWithTag(NonPagedPool, 0x2000, 'stck');
+	RtlZeroMemory(g_VMXCPU.pStack, 0x2000);
+	Log("SUCCESS:VMXON指令调用成功！", 1);
 
 	Vmx_VmClear(g_VMXCPU.pVMCSRegion_PA.LowPart, g_VMXCPU.pVMCSRegion_PA.HighPart);
-	Log("SUCCESS:VMCLEAR指令调用成功!", 0)
+	Log("g_VMXCPU.pStack", g_VMXCPU.pStack)
 	//选择机器
 	Vmx_VmPtrld(g_VMXCPU.pVMCSRegion_PA.LowPart, g_VMXCPU.pVMCSRegion_PA.HighPart);
 
-
-
-	void SetupVMCS();
+	SetupVMCS();
 
 	Vmx_VmLaunch();
+
 	//=======================================================
 	Log("ERROR:Vmx_VmLaunch指令调用失败!", Vmx_VmRead(VM_INSTRUCTION_ERROR));
 	return STATUS_SUCCESS;
@@ -125,6 +196,7 @@ NTSTATUS StopVirtualTechnology()
 	//释放内存
 	ExFreePool(g_VMXCPU.pVMXONRegion);
 	ExFreePool(g_VMXCPU.pVMCSRegion);
+	ExFreePool(g_VMXCPU.pStack)
 	Log("SUCCESS:VMXOFF指令调用成功！", 1);
 	return STATUS_SUCCESS;
 }
