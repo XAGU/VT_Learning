@@ -13,6 +13,9 @@ static ULONG VmxAdjustControls(ULONG Ctl, ULONG Msr)
 	return Ctl;
 }
 
+extern ULONG g_ret_eip;
+extern ULONG g_ret_esp;
+
 void __declspec(naked) GuestEntry(void)
 {
 	__asm
@@ -32,7 +35,11 @@ void __declspec(naked) GuestEntry(void)
 		mov ax, ss
 		mov ss, ax
 	}
-	Vmx_VmCall();
+	__asm
+	{
+		mov esp, g_ret_esp
+		jmp g_ret_eip
+	}
 }
 
 static void SetupVMCS()
@@ -184,19 +191,36 @@ NTSTATUS StartVirtualTechnology()
 	return STATUS_SUCCESS;
 }
 
+extern ULONG g_vmcall_arg;
+extern ULONG g_stop_esp, g_stop_eip;
+
 NTSTATUS StopVirtualTechnology()
 {
 	_CR4 uCr4;
 	//关闭VMX
-	Vmx_VmxOff();
+	__asm
+	{
+		pushfd
+		pushad
+		mov g_stop_esp,esp
+		mov g_stop_eip,offset STOP_EIP
+	}
+	g_vmcall_arg = 'exit';
+	Vmx_VmCall();
 	//置Cr4 VMXE位为0
+	__asm
+	{
+STOP_EIP:
+		popad
+		popfd
+	}
 	*((ULONG*)&uCr4) = Asm_GetCr4();
 	uCr4.VMXE = 0;
 	Asm_SetCr4(*((ULONG*)&uCr4));
 	//释放内存
 	ExFreePool(g_VMXCPU.pVMXONRegion);
 	ExFreePool(g_VMXCPU.pVMCSRegion);
-	ExFreePool(g_VMXCPU.pStack)
+	ExFreePool(g_VMXCPU.pStack);
 	Log("SUCCESS:VMXOFF指令调用成功！", 1);
 	return STATUS_SUCCESS;
 }
